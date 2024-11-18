@@ -3,17 +3,19 @@ import { StatusBar } from 'expo-status-bar';
 import { StyleSheet, Text, View, Button, TextInput, Modal, ActivityIndicator, Image } from 'react-native';
 import { Picker } from '@react-native-picker/picker';
 import * as ImagePicker from 'expo-image-picker';
+import * as FileSystem from 'expo-file-system';
+import { v4 as uuidv4 } from 'uuid';
 
 export default function App() {
-  const [selectedLora, setSelectedLora] = useState();
   const [negativePrompt, setNegativePrompt] = useState('');
   const [positivePrompt, setPositivePrompt] = useState('');
   const [loading, setLoading] = useState(false);
   const [imageGenerated, setImageGenerated] = useState(false);
-  const [selectedImage, setSelectedImage] = useState(null); // Novo estado para armazenar a imagem selecionada
+  const [selectedImage, setSelectedImage] = useState(null);
+  const [generatedImage, setGeneratedImage] = useState(null);
+  const [temporaryId, setTemporaryId] = useState(null);
 
   const handleLoadImage = async () => {
-    // Solicitar permissão para acessar a galeria de imagens
     const permissionResult = await ImagePicker.requestMediaLibraryPermissionsAsync();
 
     if (permissionResult.granted === false) {
@@ -21,7 +23,6 @@ export default function App() {
       return;
     }
 
-    // Abrir o seletor de imagens
     const result = await ImagePicker.launchImageLibraryAsync({
       mediaTypes: ImagePicker.MediaTypeOptions.All,
       allowsEditing: false,
@@ -29,31 +30,76 @@ export default function App() {
       quality: 1,
     });
 
-    // Verificar se o usuário não cancelou a seleção
     if (!result.canceled) {
-      setSelectedImage(result.assets[0].uri); // Armazena o URI da imagem selecionada
+      setSelectedImage(result.assets[0].uri);
       console.log('Imagem selecionada:', result.assets[0].uri);
     }
   };
 
-  const handleGenerateImage = () => {
-    console.log('Gerando nova imagem com prompts:');
-    console.log('Prompt Negativo:', negativePrompt);
-    console.log('Prompt Positivo:', positivePrompt);
+  const handleGenerateImage = async () => {
+    if (!selectedImage || !positivePrompt || !negativePrompt) {
+      alert("Preencha todos os campos antes de gerar a imagem.");
+      return;
+    }
 
     setLoading(true);
-    setImageGenerated(false);
 
-    // Fecha o carregamento e exibe a imagem após 1 segundo
-    setTimeout(() => {
+    try {
+      const formData = new FormData();
+      const fileUri = selectedImage;
+      const fileName = fileUri.split('/').pop();
+
+      // Criação do arquivo para o FormData
+      const fileData = await FileSystem.readAsStringAsync(fileUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      formData.append("photo", {
+        uri: fileUri,
+        name: fileName,
+        type: "image/jpeg",
+      });
+      formData.append("positivePrompt", positivePrompt);
+      formData.append("negativePrompt", negativePrompt);
+
+      const tempId = uuidv4();
+      setTemporaryId(tempId);
+
+      const response = await fetch(`http://localhost:8080/customers/${tempId}`, {
+        method: "POST",
+        body: formData,
+        headers: {
+          "Content-Type": "multipart/form-data",
+        },
+      });
+
+      if (response.ok) {
+        console.log("Imagem enviada com sucesso!");
+        // Buscar imagem gerada
+        const fetchResponse = await fetch(`http://localhost:8080/customers/${tempId}`);
+        const data = await fetchResponse.json();
+
+        if (fetchResponse.ok && data.photos && data.photos.length > 0) {
+          setGeneratedImage(data.photos[0]);
+          setImageGenerated(true);
+        } else {
+          alert("Erro ao buscar a imagem gerada.");
+        }
+      } else {
+        alert("Erro ao enviar a imagem.");
+      }
+    } catch (error) {
+      console.error("Erro de conexão:", error);
+      alert("Erro ao conectar com o servidor.");
+    } finally {
       setLoading(false);
-      setImageGenerated(true); // Mostra a imagem gerada
-    }, 1000);
+    }
   };
 
   const handleBackToHome = () => {
-    setImageGenerated(false); // Retorna para a tela inicial
-    setSelectedImage(null); // Limpa a imagem selecionada ao voltar
+    setImageGenerated(false);
+    setSelectedImage(null);
+    setGeneratedImage(null);
   };
 
   return (
@@ -64,19 +110,6 @@ export default function App() {
             source={require('./media/logo.png')}
             style={styles.logo}
           />
-
-          <View style={styles.pickerContainer}>
-            <Picker
-              selectedValue={selectedLora}
-              onValueChange={(itemValue) => setSelectedLora(itemValue)}
-              style={styles.picker}
-            >
-              <Picker.Item label="Selecione uma Lora" value="" />
-              <Picker.Item label="Lora 1" value="lora1" />
-              <Picker.Item label="Lora 2" value="lora2" />
-              <Picker.Item label="Lora 3" value="lora3" />
-            </Picker>
-          </View>
 
           <View style={styles.buttonUploadImage}>
             <Button title="Selecione sua imagem" onPress={handleLoadImage} color="#FF4500" />
@@ -104,10 +137,12 @@ export default function App() {
         </>
       ) : (
         <>
-          <Image
-            source={require('./media/gabrieldepois.jpeg')}
-            style={styles.generatedImage}
-          />
+          {generatedImage && (
+            <Image
+              source={{ uri: generatedImage }}
+              style={styles.generatedImage}
+            />
+          )}
           <View style={styles.buttonContainer}>
             <Button title="Salvar Imagem" color="#FF4500" />
             <View style={styles.spaceBetweenButtons} />
@@ -118,7 +153,6 @@ export default function App() {
 
       <StatusBar style="light" />
 
-      {/* Modal de Carregamento */}
       <Modal
         animationType="fade"
         transparent={true}
@@ -147,18 +181,6 @@ const styles = StyleSheet.create({
     height: 300,
     resizeMode: 'contain',
     marginBottom: 10,
-  },
-  title: {
-    fontSize: 24,
-    fontWeight: 'bold',
-    marginBottom: 20,
-  },
-  pickerContainer: {
-    width: '100%',
-    marginBottom: 20,
-  },
-  picker: {
-    backgroundColor: '#e0e6ed',
   },
   buttonUploadImage: {
     width: '100%',
@@ -194,6 +216,6 @@ const styles = StyleSheet.create({
     marginBottom: 20,
   },
   spaceBetweenButtons: {
-    height: 20, // Ajuste a altura conforme necessário
+    height: 20,
   },
 });
